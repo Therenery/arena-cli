@@ -1,0 +1,30 @@
+#!/bin/bash
+# arena-codex —— 用 Codex 的 TUI 驱动 arena.ai 的 Agent
+set -u
+
+# 1) 隧道
+curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1 || arena-tunnel >/dev/null 2>&1
+
+# 2) Responses 适配器（17893）
+RESP_BIN=${ARENA_RESPONSES_BIN:-/usr/local/bin/arena-responses}
+if ! curl -s --max-time 2 http://127.0.0.1:17893/health >/dev/null 2>&1; then
+  # 适配器缺失时报清楚，别让 tmux 里挂一个空 node 进程
+  if [ ! -s "$RESP_BIN" ]; then
+    echo "缺少 Responses 适配器: $RESP_BIN" >&2
+    echo "  这个仓库里 cli/arena-responses 是空文件，先装上适配器，或用 arena chat 走 chat/completions。" >&2
+    echo "  也可用 ARENA_RESPONSES_BIN 指向已有实现。" >&2
+    exit 1
+  fi
+  tmux kill-session -t arbresp 2>/dev/null
+  tmux new-session -d -s arbresp "node $RESP_BIN 2>&1 | tee /tmp/arena-responses.log"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    curl -s --max-time 1 http://127.0.0.1:17893/health >/dev/null 2>&1 && break
+  done
+fi
+
+export ARENA_API_KEY="sk-arena-local"
+export RUST_LOG="${RUST_LOG:-error}"
+
+exec "${CODEX_BIN:-/root/.local/codex/codex}" --no-daemon "$@"
+

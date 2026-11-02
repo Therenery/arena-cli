@@ -1,0 +1,125 @@
+#!/bin/bash
+# arena —— 通过电脑上的 arena_bridge 调用 arena.ai（Agent 模式为主）
+set -u
+
+MODE=${ARB_MODE:-agent}
+SESSION=${ARB_SESSION:-main}
+FRESH=0
+MODEL=''
+SHOW_REASON=0
+PS1WIN='F:\__AI__\work\arb.ps1'
+RDWIN='F:\__AI__\work\rd2.js'
+OUTWIN='F:\__AI__\tmp\last.json'
+
+usage() {
+  cat <<'EOF'
+用法: arena [选项] "问题"
+
+  -d, --direct         direct 模式（单模型快速问答，默认是 agent）
+  -a, --agent          agent 模式（可跑工具、读写仓库，默认）
+  -s, --session 名字    会话名（默认 main，用于服务端区分并发）
+  -m, --model 名字      指定模型
+  -r, --reasoning      同时显示思考过程
+  -n, --new            发问前清空该会话在服务端的上下文
+  -h, --help           显示本帮助
+
+说明: 每次调用都是独立任务，不继承上一轮的上下文。
+      需要上下文时，把前文一起写进问题里。
+
+示例:
+  arena "后室的实体怎么设计才不显得随机"
+  arena -d "用一句话解释熵"
+  arena -r "分析这个仓库的结构，重点看构建流程"
+EOF
+}
+
+need_val() {
+  if [ $# -lt 2 ]; then echo "缺少参数：$1" >&2; exit 2; fi
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d|--direct)  MODE=direct; shift ;;
+    -a|--agent)   MODE=agent; shift ;;
+    -n|--new)     FRESH=1; shift ;;
+    -s|--session) need_val "$@"; SESSION="$2"; shift 2 ;;
+    -m|--model)   need_val "$@"; MODEL="$2"; shift 2 ;;
+    -r|--reasoning) SHOW_REASON=1; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "未知选项: $1" >&2; usage; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+PROMPT="$*"
+if [ -z "$PROMPT" ]; then usage; exit 2; fi
+
+PB64=$(printf '%s' "$PROMPT" | base64 -w0)
+# Windows 命令行上限（cmd 8191 字符）会先撞上，转发前就挡住，别让 base64 被截断成乱码
+if [ "${#PB64}" -gt 7000 ]; then
+  echo "问题太长：base64 后 ${#PB64} 字符，超过 Windows 命令行上限。" >&2
+  echo "  约合中文 1700 字。请拆成多次提问，或把长文放进工作区仓库让 Agent 自己读。" >&2
+  exit 2
+fi
+CMD="powershell -NoProfile -ExecutionPolicy Bypass -File $PS1WIN -PromptB64 $PB64 -Session $SESSION -Mode $MODE -Fresh $FRESH -Out $OUTWIN"
+[ -n "$MODEL" ] && CMD="$CMD -Model $MODEL"
+
+if [ -t 2 ]; then
+  printf '\033[2m[%s/%s] 已发送，等待中\033[0m' "$MODE" "$SESSION" >&2
+else
+  printf '[%s/%s] 已发送，等待中\n' "$MODE" "$SESSION" >&2
+fi
+
+pc "$CMD" > /tmp/.arena.ps.out 2>/dev/null &
+PID=$!
+N=0
+while kill -0 "$PID" 2>/dev/null; do
+  sleep 5
+  N=$((N+5))
+  if [ "$N" -gt 1560 ]; then
+    echo "" >&2
+    echo "等待超时（26 分钟），已放弃；arb.ps1 侧可能还在跑，稍后用 arena new 清理会话。" >&2
+    kill "$PID" 2>/dev/null
+    exit 1
+  fi
+  if [ -t 2 ]; then printf '\r\033[2m[%s/%s] 已等 %ds\033[0m' "$MODE" "$SESSION" "$N" >&2; fi
+done
+wait "$PID" 2>/dev/null
+[ -t 2 ] && printf '\r\033[K' >&2
+
+if ! grep -q '^OK ' /tmp/.arena.ps.out 2>/dev/null; then
+  MSG=$(grep '^ERR ' /tmp/.arena.ps.out 2>/dev/null | head -1 | sed 's/^ERR //')
+  [ -z "$MSG" ] && MSG="请求失败（pc 通道或服务端异常）"
+  case "$MSG" in
+    *NEED_VERIFY*) echo "需要人工验证：Arena 弹了人机验证，去电脑上的 Chrome 点一下再重试。" ;;
+    *busy*)        echo "服务忙（队列满），等一会儿再发。" ;;
+    *chrome*)      echo "Chrome 没起来，稍等几秒重试，或去电脑上确认 chrome-arena 任务。" ;;
+    *)             echo "失败: $MSG" ;;
+  esac
+  exit 1
+fi
+
+RAW=$(pc "node $RDWIN $OUTWIN" 2>/dev/null | tr -d '\r')
+B64=$(printf '%s' "$RAW" | grep -o '##B64##[A-Za-z0-9+/=]*##END##' | head -1 | sed 's/##B64##//; s/##END##//')
+if [ -z "$B64" ]; then echo "取回结果失败（传输异常）" >&2; exit 1; fi
+
+JSON=$(printf '%s' "$B64" | base64 -d 2>/dev/null | gunzip 2>/dev/null)
+if [ -z "$JSON" ]; then echo "解压结果失败" >&2; exit 1; fi
+
+OK=$(printf '%s' "$JSON" | jq -r '.ok // false' 2>/dev/null)
+if [ "$OK" != "true" ]; then
+  ERR=$(printf '%s' "$JSON" | jq -r '.error // "未知错误"' 2>/dev/null)
+  case "$ERR" in
+    *NEED_VERIFY*) echo "需要人工验证：Arena 弹了人机验证，去电脑上的 Chrome 点一下再重试。" ;;
+    *)             echo "失败: $ERR" ;;
+  esac
+  exit 1
+fi
+
+if [ "$SHOW_REASON" = "1" ]; then
+  R=$(printf '%s' "$JSON" | jq -r '.reasoning // ""')
+  if [ -n "$R" ]; then printf '\033[2m%s\033[0m\n\n' "$R"; fi
+fi
+
+printf '%s' "$JSON" | jq -r '.text // ""'

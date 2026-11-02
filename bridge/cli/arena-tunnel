@@ -1,0 +1,39 @@
+#!/bin/bash
+# arena-tunnel —— 确保手机到电脑 17892 的隧道存在
+set -u
+PORT=17892
+TS="user@<TAILSCALE_IP>"
+V6="user@<IPV6_ADDR>"
+
+alive() { curl -s --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; }
+
+alive && exit 0
+
+try() {
+  local target=$1; shift
+  timeout 25 ssh -f -N -o ExitOnForwardFailure=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+      -o StrictHostKeyChecking=accept-new "$@" \
+      -L "$PORT:127.0.0.1:$PORT" "$target" >/dev/null 2>&1
+  local i
+  for i in 1 2 3 4 5; do
+    sleep 1
+    alive && { echo "$target" > /tmp/.arena-tunnel-route; return 0; }
+  done
+  return 1
+}
+
+# 优先用 pc 验证过的那条路
+PREF=$(awk '{print $2}' /tmp/.pc-route3 2>/dev/null)
+case "${PREF:-}" in
+  v6)  try "$V6" && exit 0 ;;
+  app) try "$TS" && exit 0 ;;
+esac
+
+try "$V6" && exit 0
+try "$TS" -o "ProxyCommand=tsnc %h %p" && exit 0
+try "$TS" && exit 0
+
+echo "隧道建立失败：检查电脑是否开机、arena-bridge 计划任务是否在跑" >&2
+exit 1
+

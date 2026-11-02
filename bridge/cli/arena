@@ -1,0 +1,110 @@
+#!/bin/bash
+# arena —— Arena Agent 本地 CLI 入口（交互式对话 + 单发提问 + 运维）
+set -u
+
+usage() {
+  cat <<'EOF'
+arena —— 把 arena.ai 的 Agent 接进本地工作流
+
+用法:
+  arena                     进入 Codex 风格的 TUI（默认）
+  arena "问题"               单发提问，打印答案后退出
+  arena chat [选项]          进 aichat 的轻量 REPL（脚本友好）
+
+单发选项:
+  -d, --direct              Direct 模式（单模型，更快更省）
+  -a, --agent               Agent 模式（默认，可跑工具、读仓库）
+  -s, --session 名字         会话名（默认 main）
+  -m, --model 名字           指定 arena 模型 id
+  -r, --reasoning           同时打印思考过程
+  -n, --new                 发问前清空该会话的服务端历史
+
+运维:
+  arena models              列出可用模型
+  arena sessions            列出本地保存的会话
+  arena repos               列出页面里可选的 GitHub 仓库
+  arena repo <owner/name>   切换工作区仓库（等于开新对话）
+  arena new [名字]           清空会话（服务端历史 + 本地记录）
+  arena doctor              体检：隧道 / 桥接 / Chrome / 模型 / 客户端
+  arena help                本帮助
+
+示例:
+  arena
+  arena "后室的实体怎么设计才不显得随机"
+  arena -d "用一句话解释熵"
+  arena chat -d -s 设计
+  arena doctor
+EOF
+}
+
+case "${1:-}" in
+  ""|tui|--tui)
+    [ $# -gt 0 ] && shift
+    # Codex TUI 需要 Responses 适配器（17893）和 codex 二进制；缺任何一个就从这里掉进
+    # 「敲 arena 直接一行报错」的坑里，所以退回到能用的 REPL
+    if command -v arena-codex >/dev/null 2>&1 \
+       && { [ -x "${CODEX_BIN:-/root/.local/codex/codex}" ] || command -v codex >/dev/null 2>&1; }; then
+      exec arena-codex "$@"
+    fi
+    echo "未找到 Codex TUI，改用 REPL（arena chat）。装好 codex 后 arena 即进 TUI。" >&2
+    exec arena-chat "$@"
+    ;;
+  chat|repl|-i|--interactive)
+    shift
+    exec arena-chat "$@"
+    ;;
+  help|-h|--help) usage; exit 0 ;;
+  models|--models)
+    shift
+    curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1 || arena-tunnel >/dev/null 2>&1
+    aichat --list-models "$@" 2>&1 || echo "aichat 不可用" >&2
+    ;;
+  sessions|--sessions)
+    shift
+    aichat --list-sessions "$@" 2>&1 || true
+    ;;
+  new|--new)
+    shift
+    S=${1:-main}
+    curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1 || arena-tunnel >/dev/null 2>&1
+    if ! curl -s --max-time 10 "http://127.0.0.1:17892/new?session=$S" >/dev/null 2>&1; then
+      echo "清理失败：隧道或桥接不可用" >&2; exit 1
+    fi
+    rm -f "$HOME/.config/aichat/sessions/$S.yaml"
+    echo "已清空会话 $S"
+    ;;
+  repos|--repos)
+    shift
+    curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1 || arena-tunnel >/dev/null 2>&1
+    R=$(curl -s --max-time 150 "http://127.0.0.1:17892/repos")
+    echo "$R" | jq -r 'if .repos then "当前: \(.repo)\n" + (.repos | join("\n")) else "失败: \(.error // "未知")" end' 2>/dev/null || echo "$R"
+    ;;
+  repo|--repo)
+    shift
+    W=${1:-}
+    if [ -z "$W" ]; then echo "用法: arena repo <owner/name>" >&2; exit 2; fi
+    curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1 || arena-tunnel >/dev/null 2>&1
+    R=$(curl -s --max-time 200 --get --data-urlencode "name=$W" "http://127.0.0.1:17892/repo")
+    echo "$R" | jq -r 'if .ok then "已切到 \(.repo)，新对话已开" else "失败: \(.error // "未知")" end' 2>/dev/null || echo "$R"
+    ;;
+  doctor)
+    echo "== 隧道 =="
+    if curl -s --max-time 2 http://127.0.0.1:17892/health >/dev/null 2>&1; then
+      echo "  已连通 $(cat /tmp/.arena-tunnel-route 2>/dev/null || echo 直连)"
+    else
+      echo "  未连通，尝试建立..."
+      arena-tunnel 2>&1 | sed 's/^/  /' || true
+    fi
+    echo "== 桥接 =="
+    echo "  $(curl -s --max-time 5 http://127.0.0.1:17892/health 2>/dev/null || echo 无响应)"
+    echo "== 模型 =="
+    aichat --list-models 2>/dev/null | sed 's/^/  /' || echo "  aichat 不可用"
+    echo "== 客户端 =="
+    printf '  %s\n' "$(aichat --version 2>/dev/null | head -1)"
+    command -v arena-send >/dev/null && echo "  arena-send 就绪"
+    ;;
+  *)
+    exec arena-send "$@"
+    ;;
+esac
+

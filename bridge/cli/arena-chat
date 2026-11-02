@@ -1,0 +1,80 @@
+#!/bin/bash
+# arena-chat —— 进入 Arena Agent 交互式对话（基于 aichat 的 REPL）
+set -u
+
+MODEL=arena-agent
+SESSION=${ARB_SESSION:-main}
+NOBANNER=0
+FRESH=0
+REPO=''
+
+need_val() {
+  if [ $# -lt 2 ]; then echo "缺少参数：$1" >&2; exit 2; fi
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d|--direct)   MODEL=arena-direct; shift ;;
+    -a|--agent)    MODEL=arena-agent;  shift ;;
+    -s|--session)  need_val "$@"; SESSION="$2"; shift 2 ;;
+    -m|--model)    need_val "$@"; MODEL="$2"; shift 2 ;;
+    -n|--fresh)    FRESH=1; shift ;;
+    -R|--repo)     need_val "$@"; REPO="$2"; shift 2 ;;
+    -q|--quiet)    NOBANNER=1; shift ;;
+    -h|--help)
+      cat <<'EOF'
+用法: arena chat [选项]
+
+  -d, --direct         Direct 模式（单模型，响应更快）
+  -a, --agent          Agent 模式（默认，可跑工具、读仓库）
+  -s, --session 名字    会话名（默认 main）
+  -m, --model 名字      直接指定 arena 模型 id
+  -R, --repo 仓库      进对话前切换工作区仓库（owner/name）
+  -n, --fresh          以空会话开始（丢掉该会话的旧记录）
+  -q, --quiet          不打印欢迎信息
+
+REPL 内命令:
+  .model   切换模型      .session  切换会话
+  .file    附加文件      .set      调整运行时设置
+  .exit    退出          Ctrl-D    退出
+  多行输入: 先输入 ::: 回车，再输入内容，最后再一行 ::: 结束
+EOF
+      exit 0 ;;
+    --) shift; break ;;
+    -*) echo "未知选项: $1" >&2; exit 2 ;;
+    *)  break ;;
+  esac
+done
+
+command -v aichat >/dev/null 2>&1 || { echo "未找到 aichat，请先安装" >&2; exit 1; }
+
+HEALTH=$(curl -s --max-time 2 http://127.0.0.1:17892/health 2>/dev/null)
+if ! printf '%s' "$HEALTH" | grep -q '"ok":true'; then
+  echo "正在建立到电脑的隧道..." >&2
+  if ! arena-tunnel >/dev/null 2>&1; then
+    echo "隧道建立失败：确认电脑开机、arena-bridge 计划任务在跑" >&2
+    exit 1
+  fi
+  HEALTH=$(curl -s --max-time 3 http://127.0.0.1:17892/health 2>/dev/null)
+  printf '%s' "$HEALTH" | grep -q '"ok":true' || {
+    echo "桥接服务异常: ${HEALTH:-无响应}" >&2; exit 1; }
+fi
+
+if [ -n "$REPO" ]; then
+  echo "切换仓库到 $REPO ..." >&2
+  curl -s --max-time 200 --get --data-urlencode "name=$REPO" "http://127.0.0.1:17892/repo"     | jq -r 'if .ok then "  已切到 \(.repo)" else "  失败: \(.error // "未知")" end' 2>/dev/null >&2
+fi
+
+if [ "$NOBANNER" != 1 ] && [ -t 1 ]; then
+  cat <<EOF
+arena chat · ${MODEL} · 会话 ${SESSION}
+  直接输入问题回车；多行输入先打 ::: 回车，结束再打一行 :::
+  .model 切模型   .session 切会话   .file 附加文件   .exit 退出（Ctrl-D 同）
+  会话自动保存；清空旧记录用 arena new 或 arena chat -n
+EOF
+fi
+
+if [ "$FRESH" = 1 ]; then
+  exec aichat -m "arena:${MODEL}" -s "${SESSION}" --empty-session --save-session
+fi
+exec aichat -m "arena:${MODEL}" -s "${SESSION}" --save-session
