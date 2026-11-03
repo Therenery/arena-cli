@@ -45,7 +45,7 @@ bash scripts/check.sh        # 编 release + 跑全部单测 + 顺手做一次 W
 | 项 | 状态 |
 | --- | --- |
 | 宿主（x86_64-unknown-linux-gnu）`rustc 1.88.0` 编译 | ✅ 通过，**零警告** |
-| 单元测试 | ✅ **122 个全过**（见第 8 节） |
+| 单元测试 | ✅ **122 个全过**（见第 9 节） |
 | `--target x86_64-pc-windows-gnu` 完整编译（`--emit=obj`，含全部 `cfg(windows)` 分支） | ✅ 通过，零警告，产出 COFF 目标文件 |
 | 链接出 `arena-lite.exe` | ❌ 沙箱里**没做到**：缺 mingw 导入库（`libkernel32.a`/`libuser32.a` 等），而这台机器只允许访问 npm/pypi/github 镜像，拿不到 mingw-w64 工具链。代码没问题（编译到目标文件那一步已经过了），是链接器找不到系统库 |
 | `cargo` | ❌ 沙箱里没有 cargo，也没有 crates.io 网络；本 crate 零依赖，所以用 `rustc` 直编等价 |
@@ -241,18 +241,19 @@ GET /history?session=<name>
 
 | 模块 | 覆盖内容 | 数量 |
 | --- | --- | --- |
-| `json` | 嵌套对象/数组、`\uXXXX` 与代理对、转义、数字、空容器、坏输入不 panic、深层嵌套不爆栈、往返转义 | 10 |
-| `width` | CJK/假名/谚文宽 2、组合符合成宽 0、emoji 宽 2、按显示宽度折行（不切断宽字符）、混合中英折行、超长词强断、制表符/CRLF、任意宽度不越界 | 12 |
+| `ui` | 帧行数=终端行数、任意宽度不越界、状态栏六要素、spinner+秒数、折叠/展开文案、`↓ 新内容`、验证态转红、空态、极小终端不 panic、LOGO、工具摘要 | 11 |
+| `app` | 输入编辑（含中英混合光标）、历史、多行、模式命令、Tab 补全、滚动跟随/回底恢复、流式块累积、旧回合丢弃、错误落块、相对时间 | 15 |
+| `keys` | 方向键、PgUp/PgDn、Ctrl 组合、UTF-8 分片、ESC 序列分片、CSI-u 的 Shift+Enter、Tab/BackTab、未知序列不 panic | 14 |
+| `width` | CJK/假名/谚文宽 2、组合符号宽 0、emoji 宽 2、按显示宽度折行（不切断宽字符）、混合中英、超长词强断、制表符/CRLF、任意宽度不越界 | 12 |
+| `sse` | 单/多事件、跨分片拼帧、CRLF、多行 data、注释心跳、`[DONE]`、`event:` 字段、收尾残留、UTF-8 被切开的字节、逐字节喂入 | 12 |
+| `json` | 嵌套对象/数组、`\uXXXX` 与代理对、转义、数字、空容器、坏输入不 panic、深层嵌套不爆栈、往返转义、真实 chunk 形状 | 11 |
+| `main` | 参数解析（无参→TUI、提示词→单发、模式、子命令、非法选项、logo/color 开关） | 10 |
+| `client` | 请求体（mode/models/转义）、health 解析、思考/工具行拆分（含跨分片与误判防护） | 9 |
+| `httpc` | base 地址解析（裸 host、`http://`、前缀、IPv6、默认端口、拒绝 https/垃圾输入）、传输分块判定 | 7 |
+| `err` | 409/429/401/chrome/超时的分类、中文文案含处置建议、错误体抽取、按字符截断 | 7 |
 | `urlenc` | unreserved 保留、空格 `%20`、CJK 按 UTF-8 字节编码、保留字转义、query 拼接 | 6 |
-| `sse` | 单/多事件、跨分片拼帧、CRLF、多行 data、注释心跳、`[DONE]`、`event:` 字段、收尾残留、UTF-8 被切开的字节、逐字节喂入 | 13 |
-| `client` | 请求体（mode/models/转义）、health 解析、思考/工具行拆分（含跨分片与误判防护） | 10 |
-| `err` | 409/429/401/chrome/超时的分类、中文文案含处置建议、错误体抽取 | 6 |
-| `keys` | 方向键、PgUp/PgDn、Ctrl 组合、UTF-8 分片、ESC 序列分片、CSI-u 的 Shift+Enter、Tab/BackTab | 14 |
+| `theme` | 配色开关、四种模式颜色互不相同、LOGO 形状、定位/铃铛序列 | 4 |
 | `mode` | 别名解析、传给桥的字面量、双栏判定 | 3 |
-| `httpc` | base 地址解析（裸 host、`http://`、前缀、IPv6、拒绝 https/垃圾输入） | 7 |
-| `app` | 输入编辑（含中英混合光标）、历史、多行、模式命令、Tab 补全、滚动跟随/回底恢复、流式块累积、旧回合丢弃、错误落块 | 15 |
-| `ui` | 帧行数=终端行数、任意宽度不越界、状态栏六要素、spinner+秒数、折叠/展开文案、`↓ 新内容`、验证态转红、空态、极小终端不 panic、LOGO | 9 |
-| `main` | 参数解析（无参→TUI、提示词→单发、模式、子命令、非法选项） | 9 |
 | `term/unix` | termios 偏移量守卫 | 1 |
 
 ### 端到端：`bash scripts/e2e.sh build/arena-lite`
@@ -262,7 +263,7 @@ GET /history?session=<name>
 - 单发流式正文、`--reasoning` 下工具行拆成工具块、`--mode battle` 双栏
 - `health` / `history` / `resume`（含「读不到就非 0 退出」）
 - 429 队列满、桥没起来 —— 都是中文人话
-- 409 验证 → 等 6 秒 → 自动重试成功（`VERIFY_TIMES=1`）
+- 409 验证 → 等 6 秒 → 自动重试成功（脚本会另起一个 `VERIFY_TIMES=1` 的假桥）
 - TUI：伪终端驱动 19 项，包括状态栏内容、流式渲染、Ctrl+R / Ctrl+T 折叠、`/battle` 双栏、`↓ 新内容`、`/help`、Tab 补全、`/resume`、流式中 Ctrl+C 只中断不退出、再按 Ctrl+C 退出
 
 ---
@@ -304,6 +305,7 @@ bridge/arena-lite/
 - 想在 TUI 里换桥地址得退出重进（`--base` 是启动参数）；`/session` 换会话名后本地对话历史会继续沿用（想彻底分开用 `/new` 或重开）。
 - `resume` 的准确度取决于桥能不能从 DOM 里认出消息节点；最差情况（`via: alternate`）顺序是猜的，客户端会明说。
 - 单发模式不支持「流式中 Ctrl+C 中断」（没有 raw mode，SIGINT 直接结束进程，桥侧会检测到客户端断开并停止生成）。
+- 工具块展开显示**参数**；桥目前只旁路到 `tool-input-available`，没有工具**结果**事件，所以没有「结果」可显示（客户端已预留渲染位置，桥以后发就能直接显示）。
 
 ---
 

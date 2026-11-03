@@ -27,7 +27,7 @@ command -v node >/dev/null || {
 
 node scripts/mock_bridge.js >/tmp/arena-lite-mock.log 2>&1 &
 MOCK_PID=$!
-trap 'kill $MOCK_PID 2>/dev/null' EXIT
+trap 'kill $MOCK_PID $MOCK2_PID 2>/dev/null' EXIT
 sleep 1
 
 echo "== 单发"
@@ -79,8 +79,27 @@ echo "== resume（读不到要明确报错、退出码非 0）"
 "$BIN" --base "$BASE" resume nope "接着聊" >/dev/null 2>&1
 [ $? -ne 0 ] && pass "读不到历史时非 0 退出" || fail "读不到历史时应当非 0 退出"
 
+MOCK2_PID=${MOCK2_PID:-0}
+
 if command -v python3 >/dev/null; then
-  echo "== TUI（伪终端）"
+  echo "== 409 验证 → 自动重试一次（起第二个假桥，第一次必 409）"
+PORT2=$((PORT + 1))
+VERIFY_TIMES=1 PORT=$PORT2 node scripts/mock_bridge.js >/tmp/arena-lite-mock2.log 2>&1 &
+MOCK2_PID=$!
+sleep 1
+RETRY_OUT=$("$BIN" --base "127.0.0.1:$PORT2" "VERIFY 一下" 2>/tmp/arena-lite-retry.err)
+RETRY_ERR=$(cat /tmp/arena-lite-retry.err)
+kill $MOCK2_PID 2>/dev/null
+case "$RETRY_ERR" in
+  *"需要人工验证"*) pass "409 时提示已切浏览器" ;;
+  *) fail "409 提示（stderr：$RETRY_ERR）" ;;
+esac
+case "$RETRY_OUT" in
+  *"我是 arena"*) pass "验证后自动重试成功" ;;
+  *) fail "自动重试（拿到：$RETRY_OUT）" ;;
+esac
+
+echo "== TUI（伪终端）"
   if python3 scripts/tui_smoke.py "$BIN" "$BASE"; then
     pass "TUI 冒烟"
   else
