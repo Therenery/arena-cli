@@ -137,15 +137,6 @@ export const tipRegistry: ContextualTip[] = [
     priority: 50,
   },
   {
-    id: 'insight-command',
-    content:
-      'Try /insight to generate personalized insights from your chat history.',
-    trigger: 'startup',
-    isRelevant: (ctx) => ctx.sessionCount > 20,
-    cooldownPrompts: 0,
-    priority: 70,
-  },
-  {
     id: 'btw-command',
     content:
       'Use /btw to ask a quick side question without disrupting the conversation.',

@@ -179,6 +179,15 @@ const external = [
 // in skill-manager / ripgrepUtils / i18n / extensions/new.
 const BUNDLE_CHUNK_DIR = 'chunks';
 
+// Single-file mode: inline every dynamic-import chunk into cli.js instead of
+// emitting ~700 separate modules under dist/chunks. Node then resolves one
+// module at cold start instead of hundreds, which is where most of the boot
+// time goes (module stat + ModuleWrap). Measured on this fork: ~3.2s vs ~5.3s
+// to first paint. Trade-off: cli.js grows to ~48 MB, the two entry points no
+// longer share code, and a bare --version pays the full parse.
+// Set BUNDLE_SPLIT_CHUNKS=1 to restore the old code-split layout.
+const SINGLE_FILE = process.env.BUNDLE_SPLIT_CHUNKS !== '1';
+
 const mainBuild = esbuild.build({
   entryPoints: {
     cli: 'packages/cli/src/cli.ts',
@@ -187,8 +196,8 @@ const mainBuild = esbuild.build({
   bundle: true,
   outdir: 'dist',
   entryNames: '[name]',
-  chunkNames: `${BUNDLE_CHUNK_DIR}/[name]-[hash]`,
-  splitting: true,
+  chunkNames: SINGLE_FILE ? undefined : `${BUNDLE_CHUNK_DIR}/[name]-[hash]`,
+  splitting: !SINGLE_FILE,
   platform: 'node',
   format: 'esm',
   target: 'node22',

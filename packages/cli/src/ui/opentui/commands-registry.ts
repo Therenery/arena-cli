@@ -376,7 +376,6 @@ export const OPEN_TUI_COMMAND_ROUTES: readonly CommandRouteSpec[] = [
   { name: 'voice', results: ['message'] },
   { name: 'setup-github', results: ['tool'] },
   { name: 'terminal-setup', results: ['message'] },
-  { name: 'insight', results: ['message', 'stream_messages'] },
   {
     name: 'statusline',
     results: ['dialog', 'submit_prompt'],

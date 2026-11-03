@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { dayKey, parseDayKey } from '../../services/insight/dates.js';
+import { dayKey, parseDayKey } from './day-key.js';
 
 const HEATMAP_CHARS = ['··', '  ', '  ', '  ', '  '] as const;
 export const MONTH_LABELS = [
