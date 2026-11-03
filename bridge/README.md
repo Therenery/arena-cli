@@ -14,6 +14,7 @@ arena_bridge.js（node，无第三方依赖）
    ├─ POST /v1/chat/completions   OpenAI 兼容，支持 stream
    ├─ POST /ask                   简化接口
    ├─ GET  /health  /v1/models  /debug  /new
+   ├─ GET  /history?session=<name>  只读：把网页端这场对话读回来（0.4.0 新增）
    │
    ├─ CDP → Chrome 9222
    │    ├─ Page.addScriptToEvaluateOnNewDocument 注入拦截脚本
@@ -38,7 +39,21 @@ arena_bridge.js（node，无第三方依赖）
 | `cli/arena-tunnel`                            | 三路隧道（tsnc / IPv6 / 直连），成功即返回                                                      |
 | `cli/arena-responses`                         | **未实现（空文件）**，Codex CLI 需要的 Responses 适配器，见「已知限制」                         |
 | `lib/parse.js`                                | 帧解析纯函数（a0/ag/a2/a3/ad + `records[]`），有 `node:test` 覆盖                               |
+| `lib/history.js`                              | `/history` 用的 DOM 读取脚本（三层启发式），假 DOM 单测覆盖                                     |
+| `arena-lite/`                                 | 专用终端客户端（Rust，零第三方依赖，Windows 优先），见 `arena-lite/README.md`                    |
 | `test/`                                       | `npm test`，不需要 Chrome                                                                       |
+
+## 0.4.0 的两处新增
+
+只加不改，原有端点行为、字段、错误码一律没动：
+
+1. **`GET /history?session=<name>`**（只读）—— 从页面 DOM 把这场对话读回来，
+   给 `arena-lite resume` 用。返回 `{ok, session, at, turns, via, messages:[{role,text}]}`；
+   `via` 标明用的是哪层启发式（`role-attrs` / `bubble-align` / `alternate`），
+   一层都匹配不上就返回 `{ok:false,error}`，不编内容。会话不存在返回 404。
+2. **人机验证时 `Page.bringToFront`** —— 检测到 Cloudflare 挑战就把这个标签页切到前台
+   （1.5 秒内不重复调），客户端再配合响铃 / 状态栏转红 / Windows 上闪任务栏，
+   验证通过后自动重试一次。
 
 ## 快速开始
 

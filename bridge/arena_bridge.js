@@ -9,8 +9,9 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { parseFrame } = require('./lib/parse');
+const { HISTORY_JS } = require('./lib/history');
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const CDP_PORT = 9222;
 const PORT = 17892;
 const HOST = '127.0.0.1';
@@ -384,6 +385,25 @@ async function ensureChrome() {
   return false;
 }
 
+// 人机验证出现时，光有错误码没用：用户得看见那个挑战框。
+// Page.bringToFront 会把这个标签页切到当前窗口的最前面（窗口被最小化时也会抬起来），
+// 同一标签页 1.5 秒内不重复调用，避免轮询里一路狂刷抢焦点。
+const bringAt = new WeakMap();
+async function needVerify(c) {
+  try {
+    const now = Date.now();
+    const last = bringAt.get(c) || 0;
+    if (now - last > 1500) {
+      bringAt.set(c, now);
+      await c.send('Page.bringToFront', {}, 5000);
+      log('verify: brought tab to front');
+    }
+  } catch (e) {
+    log('verify: bringToFront failed (' + e.message + ')');
+  }
+  return new Error('NEED_VERIFY');
+}
+
 const VERIFY_JS =
   "(()=>{try{var t=document.body.innerText||'';return /Just a moment|Verify you are human|确认您是真人|Checking your browser|Attention Required/i.test(t)||!!document.querySelector('iframe[src*=challenges.cloudflare.com],#challenge-form,#challenge-stage')}catch(e){return false}})()";
 const EDITOR_SEL = `document.querySelector('textarea[name=message]')||document.querySelector('.ProseMirror[contenteditable="true"]')`;
@@ -440,7 +460,7 @@ function dismissReviewSoon(c) {
 async function waitReady(c) {
   const t0 = Date.now();
   while (Date.now() - t0 < READY_TIMEOUT_MS) {
-    if (await c.ev(VERIFY_JS)) throw new Error('NEED_VERIFY');
+    if (await c.ev(VERIFY_JS)) throw await needVerify(c);
     if (await c.ev(READY_JS)) {
       await sleep(600);
       return;
@@ -886,7 +906,7 @@ async function getSession(name, opts) {
 async function askOnce(s, prompt, onDelta, ctx) {
   const c = s.cdp;
   const aborted = () => !!(ctx && ctx.aborted && ctx.aborted());
-  if (await c.ev(VERIFY_JS)) throw new Error('NEED_VERIFY');
+  if (await c.ev(VERIFY_JS)) throw await needVerify(c);
   if (!(await c.ev(READY_JS))) {
     await waitReady(c);
   }
@@ -964,7 +984,7 @@ async function askOnce(s, prompt, onDelta, ctx) {
         }),
       );
     if (!cand.length) {
-      if (await c.ev(VERIFY_JS)) throw new Error('NEED_VERIFY');
+      if (await c.ev(VERIFY_JS)) throw await needVerify(c);
       if (Date.now() - lastSendAt > 10000 && sendRetries < 2) {
         const left = await c.ev(VAL_JS);
         if (left <= 1) {
@@ -1061,7 +1081,7 @@ const paneReady = (t) => !!t && !NOT_READY_RE.test(String(t).trim());
 
 async function askBattle(s, prompt) {
   const c = s.cdp;
-  if (await c.ev(VERIFY_JS)) throw new Error('NEED_VERIFY');
+  if (await c.ev(VERIFY_JS)) throw await needVerify(c);
   if (!(await c.ev(READY_JS))) await waitReady(c);
   for (let i = 0; i < 24; i++) {
     if (await c.ev(MODELS_READY_JS).catch(() => false)) break;
@@ -1080,7 +1100,7 @@ async function askBattle(s, prompt) {
   while (Date.now() - t0 < ASK_MAX_MS) {
     await sleep(POLL_MS);
     if (c.closed) throw new Error('tab closed');
-    if (await c.ev(VERIFY_JS)) throw new Error('NEED_VERIFY');
+    if (await c.ev(VERIFY_JS)) throw await needVerify(c);
     const p = await readBattlePanes(c);
     if (p && paneReady(p.a.text) && paneReady(p.b.text)) {
       if (await c.ev(VOTE_READY_JS)) return p;
@@ -1271,6 +1291,46 @@ const server = http.createServer(async (req, res) => {
       },
       auth: !!AUTH_TOKEN,
     });
+  }
+  // 只读：把某个会话在网页里的对话读回来，给 arena-lite 的 resume 用
+  if (u.pathname === '/history' && req.method === 'GET') {
+    const name = u.searchParams.get('session') || DEFAULT_SESSION;
+    const s = sessions.get(name) || sessions.get(name + '#battle');
+    if (!s)
+      return send(404, {
+        ok: false,
+        error: 'no session',
+        sessions: [...sessions.keys()],
+      });
+    try {
+      const raw = await s.cdp.ev(HISTORY_JS);
+      let data = null;
+      try {
+        data = JSON.parse(raw);
+      } catch (e) {
+        data = null;
+      }
+      if (!data) return send(500, { ok: false, error: 'history: bad json from page' });
+      if (!data.ok)
+        return send(200, { ok: false, error: data.error || 'no messages' });
+      const messages = (Array.isArray(data.messages) ? data.messages : [])
+        .map((m) => ({
+          role: m && m.role === 'user' ? 'user' : 'assistant',
+          text: String((m && m.text) || ''),
+        }))
+        .filter((m) => m.text.trim());
+      return send(200, {
+        ok: true,
+        session: name,
+        at: s.lastAsk || null,
+        turns: messages.length,
+        via: data.via || '',
+        messages,
+      });
+    } catch (e) {
+      log('history error:', e.message);
+      return send(500, { ok: false, error: e.message });
+    }
   }
   if (u.pathname === '/debug') {
     const name = u.searchParams.get('session') || DEFAULT_SESSION;

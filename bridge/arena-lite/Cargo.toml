@@ -1,0 +1,22 @@
+[package]
+name = "arena-lite"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.70"
+description = "arena_bridge 的轻量终端客户端（零第三方依赖）"
+license = "MIT"
+publish = false
+
+# 零第三方依赖：这里出现任何一个 [dependencies] 都是 bug。
+[dependencies]
+
+[[bin]]
+name = "arena-lite"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
