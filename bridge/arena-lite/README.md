@@ -6,9 +6,14 @@
 
 ```bash
 cd bridge/arena-lite
-cargo build --release          # 产物 target/release/arena-lite
-# 放进 PATH 后可直接用；也可以软链成 arena-lite / arb
+cargo build --release          # 产物 target/release/arena-lite（Windows 上是 arena-lite.exe）
+# 放进 PATH 后可直接用
 ```
+
+**跨平台**：Linux/macOS 用 `stty` 开 raw mode；Windows 直接调 kernel32 控制台 API
+（`SetConsoleMode` + `GetConsoleScreenBufferInfo`，零依赖不引 winapi），
+TUI 在 Windows Terminal / PowerShell / cmd 下都能跑，中文输入自动把控制台码页临时切到 UTF-8。
+非 TTY（管道/CI）在任何平台都会自动退化为行模式 REPL。
 
 只做桥接对接这一件事，完整覆盖桥接的对话与运维接口，不带微信/QQ/飞书之类用不上的功能。
 
