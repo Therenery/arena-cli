@@ -8,6 +8,7 @@ use crate::bridge::{fmt_health, Bridge, ChatRequest, StreamEvent};
 use crate::Config;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -19,10 +20,74 @@ const HELP: &str = "模式(常驻, 随时切换, 像网页端一样): /agent /di
 
 // ---------- 终端 ----------
 
-struct Term {
-    saved: Option<String>,
+/// Windows 下直接调 kernel32 控制台 API（零依赖，不用 winapi crate）。
+/// 输入端关掉行输入/回显并打开 VT 输入，方向键等就和 Unix 一样是 ESC 序列；
+/// 输出端打开 VT 处理让 ANSI 转义生效；控制台码页临时切到 UTF-8，保证中文输入是 UTF-8 字节。
+#[cfg(windows)]
+mod win32 {
+    use std::ffi::c_void;
+
+    pub const STD_INPUT_HANDLE: u32 = (-10i32) as u32;
+    pub const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+    pub const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+    pub const ENABLE_LINE_INPUT: u32 = 0x0002;
+    pub const ENABLE_ECHO_INPUT: u32 = 0x0004;
+    pub const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
+    pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+    pub const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+    pub const CP_UTF8: u32 = 65001;
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct Coord {
+        pub x: i16,
+        pub y: i16,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct SmallRect {
+        pub left: i16,
+        pub top: i16,
+        pub right: i16,
+        pub bottom: i16,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct ConsoleScreenBufferInfo {
+        pub size: Coord,
+        pub cursor: Coord,
+        pub attributes: u16,
+        pub window: SmallRect,
+        pub max_size: Coord,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn GetStdHandle(n: u32) -> *mut c_void;
+        pub fn GetConsoleMode(h: *mut c_void, mode: *mut u32) -> i32;
+        pub fn SetConsoleMode(h: *mut c_void, mode: u32) -> i32;
+        pub fn GetConsoleScreenBufferInfo(h: *mut c_void, info: *mut ConsoleScreenBufferInfo) -> i32;
+        pub fn GetConsoleCP() -> u32;
+        pub fn SetConsoleCP(cp: u32) -> i32;
+        pub fn GetConsoleOutputCP() -> u32;
+        pub fn SetConsoleOutputCP(cp: u32) -> i32;
+    }
 }
 
+struct Term {
+    #[cfg(unix)]
+    saved: Option<String>,
+    #[cfg(windows)]
+    saved_in: Option<u32>,
+    #[cfg(windows)]
+    saved_out: Option<u32>,
+    #[cfg(windows)]
+    saved_cp_in: u32,
+    #[cfg(windows)]
+    saved_cp_out: u32,
+}
+
+#[cfg(unix)]
 impl Term {
     fn new() -> io::Result<Term> {
         let saved = Command::new("stty")
@@ -63,6 +128,73 @@ impl Term {
     }
 }
 
+#[cfg(windows)]
+impl Term {
+    fn new() -> io::Result<Term> {
+        unsafe {
+            let h_in = win32::GetStdHandle(win32::STD_INPUT_HANDLE);
+            let h_out = win32::GetStdHandle(win32::STD_OUTPUT_HANDLE);
+            let mut in_mode: u32 = 0;
+            if win32::GetConsoleMode(h_in, &mut in_mode) == 0 {
+                return Err(io::Error::new(io::ErrorKind::Other, "stdin 不是控制台（非 TTY）"));
+            }
+            let mut out_mode: u32 = 0;
+            let _ = win32::GetConsoleMode(h_out, &mut out_mode);
+            let raw_in = (in_mode
+                & !(win32::ENABLE_PROCESSED_INPUT
+                    | win32::ENABLE_LINE_INPUT
+                    | win32::ENABLE_ECHO_INPUT))
+                | win32::ENABLE_VIRTUAL_TERMINAL_INPUT;
+            if win32::SetConsoleMode(h_in, raw_in) == 0 {
+                return Err(io::Error::new(io::ErrorKind::Other, "SetConsoleMode(stdin) 失败"));
+            }
+            if out_mode != 0 {
+                let _ = win32::SetConsoleMode(
+                    h_out,
+                    out_mode
+                        | win32::ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                        | win32::ENABLE_PROCESSED_OUTPUT,
+                );
+            }
+            let cp_in = win32::GetConsoleCP();
+            let cp_out = win32::GetConsoleOutputCP();
+            let _ = win32::SetConsoleCP(win32::CP_UTF8);
+            let _ = win32::SetConsoleOutputCP(win32::CP_UTF8);
+            let mut out = io::stdout();
+            out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")?;
+            out.flush()?;
+            Ok(Term {
+                saved_in: Some(in_mode),
+                saved_out: Some(out_mode),
+                saved_cp_in: cp_in,
+                saved_cp_out: cp_out,
+            })
+        }
+    }
+
+    fn size() -> (usize, usize) {
+        unsafe {
+            let h = win32::GetStdHandle(win32::STD_OUTPUT_HANDLE);
+            let mut info = win32::ConsoleScreenBufferInfo::default();
+            if win32::GetConsoleScreenBufferInfo(h, &mut info) != 0 {
+                let w = (info.window.right - info.window.left + 1) as usize;
+                let rows = (info.window.bottom - info.window.top + 1) as usize;
+                return (rows.max(8), w.max(20));
+            }
+        }
+        (24, 80)
+    }
+
+    fn is_tty() -> bool {
+        unsafe {
+            let h = win32::GetStdHandle(win32::STD_INPUT_HANDLE);
+            let mut m: u32 = 0;
+            win32::GetConsoleMode(h, &mut m) != 0
+        }
+    }
+}
+
+#[cfg(unix)]
 impl Drop for Term {
     fn drop(&mut self) {
         let mut out = io::stdout();
@@ -72,6 +204,27 @@ impl Drop for Term {
             let _ = Command::new("stty").arg(s).status();
         } else {
             let _ = Command::new("stty").arg("sane").status();
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Term {
+    fn drop(&mut self) {
+        let mut out = io::stdout();
+        let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+        let _ = out.flush();
+        unsafe {
+            if let Some(m) = self.saved_in {
+                let _ = win32::SetConsoleMode(win32::GetStdHandle(win32::STD_INPUT_HANDLE), m);
+            }
+            if let Some(m) = self.saved_out {
+                if m != 0 {
+                    let _ = win32::SetConsoleMode(win32::GetStdHandle(win32::STD_OUTPUT_HANDLE), m);
+                }
+            }
+            let _ = win32::SetConsoleCP(self.saved_cp_in);
+            let _ = win32::SetConsoleOutputCP(self.saved_cp_out);
         }
     }
 }
