@@ -31,12 +31,14 @@ pub enum StreamEvent {
 pub struct ChatRequest {
     pub model: String,
     pub session: String,
-    /// 页面模式：agent / direct / battle / side
+    /// 页面模式：agent / direct / battle / side —— 常驻、可随时切换（对应网页端的模式选择）
     pub mode: String,
     /// 本轮前清空服务端历史（arena_new）
     pub fresh: bool,
     /// 完整对话记录（role: user/assistant），桥接只取最后一条提问，其余用于回放
     pub messages: Vec<(String, String)>,
+    /// battle / side 两栏各自的模型（metadata.models，最多两个）
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -231,15 +233,21 @@ impl Bridge {
             .iter()
             .map(|(r, c)| Json::obj(vec![("role", Json::str(r.clone())), ("content", Json::str(c.clone()))]))
             .collect();
+        let mut meta = vec![("mode", Json::str(req.mode.clone()))];
+        if !req.models.is_empty() {
+            meta.push((
+                "models",
+                Json::Arr(req.models.iter().map(|m| Json::str(m.clone())).collect()),
+            ));
+        }
         let mut b = vec![
             ("model", Json::str(req.model.clone())),
             ("user", Json::str(req.session.clone())),
             ("messages", Json::Arr(msgs)),
             ("stream", Json::Bool(stream)),
-            (
-                "metadata",
-                Json::obj(vec![("mode", Json::str(req.mode.clone()))]),
-            ),
+            ("metadata", Json::Obj(
+                meta.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            )),
         ];
         if req.fresh {
             b.push(("arena_new", Json::Bool(true)));

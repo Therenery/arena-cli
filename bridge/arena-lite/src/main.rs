@@ -19,7 +19,10 @@ pub struct Config {
     pub token: Option<String>,
     pub session: String,
     pub model: String,
+    /// 常驻页面模式：agent / direct / battle / side（可随时切换）
     pub mode: String,
+    /// battle / side 两栏模型（--models a,b）
+    pub models: Vec<String>,
     pub reasoning: bool,
     pub fresh: bool,
     pub no_stream: bool,
@@ -89,8 +92,10 @@ fn usage() -> String {
 对话选项:
   -d, --direct            direct 模式（模型 arena-direct，单模型更快）
   -a, --agent             agent 模式（默认，可跑工具、读仓库）
-  -m, --model <id>        指定模型 id
-      --mode <模式>       覆盖页面模式（agent|direct），默认随模型走
+  -m, --model <id>        指定模型 id（路由模型）
+      --mode <模式>       常驻页面模式：agent | direct | battle | side（默认 agent，
+                          -d 时为 direct）。TUI/REPL 里可随时用 /agent /direct
+                          /battle /side 切换，之后的提问都走当前模式
   -s, --session <名>      会话名（默认 main，或 $ARENA_SESSION）
   -r, --reasoning         显示思考过程（TUI 里用 /reasoning 切换）
   -n, --new               本轮前清空服务端会话历史
@@ -110,12 +115,13 @@ fn usage() -> String {
   repo <owner/name>       切换工作区仓库（等于开新对话）
   upload <文件...>        把本地文件挂到当前会话输入框
   pr [编号] [--repo o/n]  列 PR 或查看单个 PR（默认当前工作区仓库）
-  battle "问题" [--models a,b]   双模型对战
+  battle "问题" [--models a,b]   单发双模型对战（TUI/REPL 里 /battle 是切换常驻对战模式）
   vote <a|b|tie|both>     给上一轮对战投票
   help / version
 
 环境变量: ARENA_BRIDGE_URL, ARENA_TOKEN(或 ARB_TOKEN), ARENA_SESSION, ARENA_TIMEOUT
-TUI 内: /help 查看全部命令；Enter 发送，Ctrl+C 退出，↑↓ 历史，PgUp/PgDn 滚动"#,
+TUI 内: /agent /direct /battle /side 切换常驻模式，/help 查看全部命令；
+        Enter 发送，Ctrl+C 退出，↑↓ 历史，PgUp/PgDn 滚动"#,
         env!("CARGO_PKG_VERSION"),
         DEFAULT_BASE
     )
@@ -296,6 +302,16 @@ fn resolve_config(o: &Opts) -> Config {
             .mode
             .clone()
             .unwrap_or_else(|| if o.direct { "direct" } else { "agent" }.to_string()),
+        models: o
+            .models
+            .clone()
+            .map(|m| {
+                m.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
         reasoning: o.reasoning || env_any(&["ARENA_REASONING"]).map(|v| v == "1" || v == "true").unwrap_or(false),
         fresh: o.fresh,
         no_stream: o.no_stream,
@@ -556,6 +572,7 @@ fn run_ask(cfg: &Config, prompt: &str) -> i32 {
         mode: cfg.mode.clone(),
         fresh: cfg.fresh,
         messages: vec![("user".to_string(), prompt.to_string())],
+        models: cfg.models.clone(),
     };
     if cfg.no_stream {
         return match b.chat_once(&req) {

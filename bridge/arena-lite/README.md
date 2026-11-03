@@ -18,6 +18,7 @@ cargo build --release          # 产物 target/release/arena-lite
 arena-lite                      # 进对话 TUI（流式实时出字）
 arena-lite "后室的实体怎么设计?" # 单发提问，打印后退出
 arena-lite -d "用一句话解释熵"   # direct 模式（更快）
+arena-lite --mode battle "问题" # 单发对战
 arena-lite -s 设计 -r "分析这个仓库" # 指定会话 + 显示思考过程
 arena-lite models               # 聊天模型 + 路由模型
 arena-lite health               # 桥接体检（chrome / 队列 / 会话）
@@ -27,9 +28,15 @@ arena-lite repos                # 工作区可切换的仓库
 arena-lite repo Therenery/xxx   # 切换仓库（等于开新对话）
 arena-lite upload ./a.png ./b.md
 arena-lite pr [编号] [--repo owner/name]
-arena-lite battle "问题" [--models a,b]
-arena-lite vote a|b|tie|both
+arena-lite battle "问题" [--models a,b]   # 单发对战
+arena-lite vote a|b|tie|both              # 给上一轮对战投票
 ```
+
+**模式是常驻、可随时切换的**（和 arena.ai 网页端的模式选择一样，不是一次性命令）：
+TUI / 行模式 REPL 里用 `/agent`、`/direct`、`/battle [问题]`、`/side [问题]` 或
+`/mode <agent|direct|battle|side>` 切换，之后所有提问都走当前模式直到再切换；
+对战两栏的模型用 `/panemodels a,b` 设置，对战轮用 `/vote a|b|tie|both` 投票。
+状态栏最左侧始终显示当前模式。
 
 完整参数见 `arena-lite help`。
 

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const HELP: &str = "命令: /model [id] /session [名] /new /models /health /repos /repo <owner/name>\n      /reasoning [on|off] /upload <文件...> /battle <问题> /vote <a|b|tie|both> /clear /quit\n按键: Enter 发送 · Ctrl+C 退出 · Esc 清空 · ↑↓ 历史 · PgUp/PgDn 滚动";
+const HELP: &str = "模式(常驻, 随时切换, 像网页端一样): /agent /direct /side /battle [问题...] /mode <agent|direct|battle|side>\n对战栏模型: /panemodels <a,b>   投票: /vote <a|b|tie|both>\n命令: /model [id] /session [名] /new /models /health /repos /repo <owner/name>\n      /reasoning [on|off] /upload <文件...> /clear /quit\n按键: Enter 发送 · Ctrl+C 退出 · Esc 清空 · ↑↓ 历史 · PgUp/PgDn 滚动";
 
 // ---------- 终端 ----------
 
@@ -302,6 +302,7 @@ impl App {
             model: cfg.model.clone(),
             session: cfg.session.clone(),
             mode: cfg.mode.clone(),
+            pane_models: cfg.models.clone(),
             reasoning: cfg.reasoning,
             fresh: cfg.fresh,
             transcript: Vec::new(),
@@ -365,6 +366,7 @@ impl App {
             mode: self.mode.clone(),
             fresh: self.fresh,
             messages,
+            models: self.pane_models.clone(),
         };
         self.fresh = false;
         self.streaming = true;
@@ -454,6 +456,10 @@ impl App {
             self.run_slash(&text, tx);
             return;
         }
+        self.send_text(text, tx);
+    }
+
+    fn send_text(&mut self, text: String, tx: &Sender<Ev>) {
         self.transcript.push(Msg {
             role: Role::User,
             text: text.clone(),
@@ -466,6 +472,15 @@ impl App {
         } else {
             self.start_request(tx);
         }
+    }
+
+    /// 切换常驻页面模式（agent / direct / battle / side），之后的提问都走这个模式。
+    fn set_mode(&mut self, m: &str) {
+        self.mode = m.to_string();
+        self.sys(&format!(
+            "已切换到 {} 模式（之后的提问都走这个模式，直到再切换）",
+            m
+        ));
     }
 
     fn on_key(&mut self, key: Key, tx: &Sender<Ev>) {
@@ -583,11 +598,44 @@ impl App {
             "/clear" => self.transcript.clear(),
             "/model" => {
                 if args.is_empty() {
-                    self.sys(&format!("当前模型: {}（模式 {}）", self.model, self.mode));
+                    self.sys(&format!("当前模型: {}，模式: {}", self.model, self.mode));
                 } else {
                     self.model = args[0].to_string();
-                    self.mode = if args[0].contains("direct") { "direct" } else { "agent" }.to_string();
-                    self.sys(&format!("已切到 {}（模式 {}）", self.model, self.mode));
+                    self.sys(&format!(
+                        "模型已切到 {}（模式不变，仍是 {}）",
+                        self.model, self.mode
+                    ));
+                }
+            }
+            "/agent" => self.set_mode("agent"),
+            "/direct" => self.set_mode("direct"),
+            "/side" => self.set_mode("side"),
+            "/battle" => {
+                self.set_mode("battle");
+                if !args.is_empty() {
+                    let q = args.join(" ");
+                    self.send_text(q, tx);
+                }
+            }
+            "/mode" => match args.first() {
+                Some(&m) if ["agent", "direct", "battle", "side"].contains(&m) => self.set_mode(m),
+                _ => self.sys("用法: /mode <agent|direct|battle|side>"),
+            },
+            "/panemodels" => {
+                if args.is_empty() {
+                    let cur = if self.pane_models.is_empty() {
+                        "默认".to_string()
+                    } else {
+                        self.pane_models.join(", ")
+                    };
+                    self.sys(&format!("对战栏模型: {}（用法: /panemodels <a,b>）", cur));
+                } else {
+                    self.pane_models = args[0]
+                        .split(',')
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty())
+                        .collect();
+                    self.sys(&format!("对战栏模型已设为: {}", self.pane_models.join(", ")));
                 }
             }
             "/session" => {
@@ -712,35 +760,9 @@ impl App {
                     });
                 }
             }
-            "/battle" => {
-                let prompt = args.join(" ");
-                if prompt.is_empty() {
-                    self.sys("用法: /battle <问题>");
-                } else {
-                    let b = self.bridge.clone();
-                    let s = self.session.clone();
-                    Self::spawn_job(tx, move || match b.battle(&s, &prompt, "battle", &[]) {
-                        Ok(j) => (fmt_battle(&j), false),
-                        Err(e) => (e, true),
-                    });
-                }
-            }
             _ => self.sys("未知命令，/help 查看帮助"),
         }
     }
-}
-
-fn fmt_battle(j: &crate::json::Json) -> String {
-    let pane = |k: &str| {
-        j.get(k)
-            .map(|p| {
-                let label = p.get("label").and_then(|v| v.as_str()).unwrap_or(k);
-                let text = p.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                format!("**{} · {}**\n\n{}", k.to_uppercase(), label, text)
-            })
-            .unwrap_or_default()
-    };
-    format!("{}\n\n---\n\n{}\n\n投票: /vote a | b | tie | both", pane("a"), pane("b"))
 }
 
 // ---------- 渲染 ----------
@@ -848,8 +870,8 @@ fn render(app: &mut App, out: &mut impl Write) -> io::Result<()> {
         None => "?",
     };
     let left = format!(
-        " arena-lite │ {} │ {} │ {}:{} {}",
-        app.model, app.session, app.bridge.ep.host, app.bridge.ep.port, dot
+        " arena-lite │ {} │ {} │ {} │ {}:{} {}",
+        app.mode, app.model, app.session, app.bridge.ep.host, app.bridge.ep.port, dot
     );
     let right = if app.streaming { format!(" {} ", spin) } else { String::new() };
     let lw = width_of(&left);
@@ -984,8 +1006,9 @@ fn repl(cfg: &Config) -> i32 {
     };
     let stdin = io::stdin();
     let mut transcript: Vec<(String, String)> = Vec::new();
+    let mut mode = cfg.mode.clone();
     loop {
-        eprint!("{} ❯ ", cfg.session);
+        eprint!("{}[{}] ❯ ", cfg.session, mode);
         let _ = io::stderr().flush();
         let mut line = String::new();
         match stdin.read_line(&mut line) {
@@ -997,16 +1020,46 @@ fn repl(cfg: &Config) -> i32 {
         if q.is_empty() {
             continue;
         }
-        if q == "/quit" || q == "/exit" {
-            break;
+        match q {
+            "/quit" | "/exit" => break,
+            "/agent" => {
+                mode = "agent".to_string();
+                eprintln!("→ agent 模式");
+                continue;
+            }
+            "/direct" => {
+                mode = "direct".to_string();
+                eprintln!("→ direct 模式");
+                continue;
+            }
+            "/battle" => {
+                mode = "battle".to_string();
+                eprintln!("→ battle 对战模式（之后每轮两栏并排回答，可 /vote 投票）");
+                continue;
+            }
+            "/side" => {
+                mode = "side".to_string();
+                eprintln!("→ side-by-side 模式");
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(m) = q.strip_prefix("/mode ") {
+            let m = m.trim();
+            if ["agent", "direct", "battle", "side"].contains(&m) {
+                mode = m.to_string();
+                eprintln!("→ {} 模式", mode);
+                continue;
+            }
         }
         transcript.push(("user".to_string(), q.to_string()));
         let req = ChatRequest {
             model: cfg.model.clone(),
             session: cfg.session.clone(),
-            mode: cfg.mode.clone(),
+            mode: mode.clone(),
             fresh: cfg.fresh,
             messages: transcript.clone(),
+            models: cfg.models.clone(),
         };
         let (tx, rx) = channel::<StreamEvent>();
         let b = bridge.clone();
