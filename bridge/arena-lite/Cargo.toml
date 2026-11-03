@@ -1,0 +1,20 @@
+[package]
+name = "arena-lite"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "轻量 Rust CLI：专门对接本地 arena_bridge（把 arena.ai Agent 接进本地工作流）"
+license = "Apache-2.0"
+
+[[bin]]
+name = "arena-lite"
+path = "src/main.rs"
+
+# 零依赖：只用 std，单个静态二进制，不需要联网拉 crates
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

@@ -107,6 +107,19 @@ arena doctor             # 隧道 / 桥接 / Chrome / 模型 体检
 6. `usage` 里的 token 数是字符数占位，不是真实 token；`tools` 目前只打印到思考区，没有映射成 `tool_calls`。
 7. Arena 服务条款禁止以程序化方式访问服务，使用风险自负。
 
+## arena-lite（Rust 轻量客户端）
+
+`arena-lite/` 是一个**零依赖、纯 std 的 Rust CLI**，专门对接本桥接，不带任何用不上的功能：
+
+```bash
+cd arena-lite && cargo build --release   # 单个静态二进制，不用联网拉 crates
+./target/release/arena-lite              # 进对话 TUI（流式）
+./target/release/arena-lite "问题"       # 单发
+./target/release/arena-lite help         # 全部命令（models/health/new/repos/repo/upload/pr/battle/vote）
+```
+
+配置走环境变量：`ARENA_BRIDGE_URL`（默认 `http://127.0.0.1:17892`）、`ARENA_TOKEN`/`ARB_TOKEN`、`ARENA_SESSION`、`ARENA_TIMEOUT`。详见 `arena-lite/README.md`。
+
 ## 开发
 
 ```bash
